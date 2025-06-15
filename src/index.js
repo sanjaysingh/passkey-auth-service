@@ -82,6 +82,17 @@ async function saveUsernameMapping(env, username, userId) {
   await env.AUTH_KV.put(`username:${username}`, userId);
 }
 
+// Helper function to find user by credential ID (for usernameless authentication)
+async function findUserByCredentialId(env, credentialId) {
+  // Try to get user ID from credential index
+  const userId = await env.AUTH_KV.get(`credential:${credentialId}`);
+  if (userId) {
+    return await getUser(env, userId);
+  }
+  
+  return null;
+}
+
 // Helper function to check if origin is allowed (subdomain of sanjaysingh.net)
 function isAllowedOrigin(origin) {
   if (!origin) return false;
@@ -132,12 +143,15 @@ function serializeRegistrationOptions(options) {
     ...options,
     user: {
       ...options.user,
-      id: typeof options.user.id === 'string' ? options.user.id : isoBase64URL.fromBuffer(options.user.id)
+      id: options.user.id instanceof Uint8Array ? isoBase64URL.fromBuffer(options.user.id) :
+          (typeof options.user.id === 'string' ? options.user.id : isoBase64URL.fromBuffer(options.user.id))
     },
-    challenge: typeof options.challenge === 'string' ? options.challenge : isoBase64URL.fromBuffer(options.challenge),
+    challenge: options.challenge instanceof Uint8Array ? isoBase64URL.fromBuffer(options.challenge) :
+               (typeof options.challenge === 'string' ? options.challenge : isoBase64URL.fromBuffer(options.challenge)),
     excludeCredentials: options.excludeCredentials?.map(cred => ({
       ...cred,
-      id: typeof cred.id === 'string' ? cred.id : isoBase64URL.fromBuffer(cred.id)
+      id: cred.id instanceof Uint8Array ? isoBase64URL.fromBuffer(cred.id) :
+          (typeof cred.id === 'string' ? cred.id : isoBase64URL.fromBuffer(cred.id))
     })) || []
   };
 }
@@ -146,10 +160,12 @@ function serializeRegistrationOptions(options) {
 function serializeAuthenticationOptions(options) {
   return {
     ...options,
-    challenge: typeof options.challenge === 'string' ? options.challenge : isoBase64URL.fromBuffer(options.challenge),
+    challenge: options.challenge instanceof Uint8Array ? isoBase64URL.fromBuffer(options.challenge) :
+               (typeof options.challenge === 'string' ? options.challenge : isoBase64URL.fromBuffer(options.challenge)),
     allowCredentials: options.allowCredentials?.map(cred => ({
       ...cred,
-      id: typeof cred.id === 'string' ? cred.id : isoBase64URL.fromBuffer(cred.id)
+      id: cred.id instanceof Uint8Array ? isoBase64URL.fromBuffer(cred.id) : 
+          (typeof cred.id === 'string' ? cred.id : isoBase64URL.fromBuffer(cred.id))
     })) || []
   };
 }
@@ -164,21 +180,53 @@ function uint8ArrayToBase64(bytes) {
 }
 
 function base64ToUint8Array(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('Invalid base64 input: expected non-empty string');
   }
-  return bytes;
+  
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch (error) {
+    throw new Error(`Failed to decode base64 string: ${error.message}`);
+  }
 }
 
 function base64UrlToUint8Array(base64url) {
-  // Convert base64url to base64
-  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  if (!base64url || typeof base64url !== 'string') {
+    throw new Error('Invalid base64url input: expected non-empty string');
+  }
+  
+  try {
+    // Convert base64url to base64
+    const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    // Add padding if needed
+    const padding = base64.length % 4;
+    const paddedBase64 = padding ? base64 + '='.repeat(4 - padding) : base64;
+    return base64ToUint8Array(paddedBase64);
+  } catch (error) {
+    throw new Error(`Failed to decode base64url string: ${error.message}`);
+  }
+}
+
+// Helper function to convert base64 to base64URL
+function base64ToBase64Url(base64) {
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Helper function to convert base64URL to base64
+function base64UrlToBase64(base64url) {
+  let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
   // Add padding if needed
   const padding = base64.length % 4;
-  const paddedBase64 = padding ? base64 + '='.repeat(4 - padding) : base64;
-  return base64ToUint8Array(paddedBase64);
+  if (padding) {
+    base64 += '='.repeat(4 - padding);
+  }
+  return base64;
 }
 
 export default {
@@ -189,16 +237,10 @@ export default {
     const origin = request.headers.get('Origin');
     
     // Log incoming request
-    log('info', 'Incoming request', {
-      method,
-      path,
-      origin,
-      userAgent: request.headers.get('User-Agent')?.substring(0, 100)
-    });
+    log('info', 'Request', { method, path, origin });
 
     // Handle CORS preflight
     if (method === 'OPTIONS') {
-      log('info', 'CORS preflight request', { origin });
       return handleOptions(origin);
     }
 
@@ -224,32 +266,21 @@ export default {
           result = await handleGetUser(request, env, origin);
           break;
         default:
-          log('warn', 'Unknown endpoint accessed', { path, method });
+          log('warn', 'Unknown endpoint', { path, method });
           result = new Response('Not Found', { 
             status: 404,
             headers: getCorsHeaders(origin)
           });
       }
       
-      // Log successful response
-      log('info', 'Request completed', {
-        path,
-        method,
-        status: result.status,
-        responseTime: Date.now() // Basic timing
-      });
-      
       return result;
     } catch (error) {
-      // Enhanced error logging
       log('error', 'Request failed', {
         path,
         method,
-        error: error.message,
-        stack: error.stack?.substring(0, 500)
+        error: error.message
       });
       
-      console.error('Error:', error);
       return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
         status: 500,
         headers: {
@@ -267,7 +298,7 @@ async function handleRegistrationBegin(request, env, origin) {
   log('info', 'Registration begin', { username, origin });
   
   if (!username) {
-    log('warn', 'Registration failed - no username', { origin });
+    log('warn', 'Registration failed - no username');
     return new Response(JSON.stringify({ error: 'Username is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -300,21 +331,15 @@ async function handleRegistrationBegin(request, env, origin) {
     timeout: 60000,
   });
 
-  // Serialize options for client
   const serializedOptions = serializeRegistrationOptions(options);
 
-  // Store challenge and user info temporarily using the serialized challenge
   await env.AUTH_KV.put(
     `challenge:${serializedOptions.challenge}`, 
     JSON.stringify({ userId, username, originalChallenge: options.challenge }), 
-    { expirationTtl: 300 } // 5 minutes
+    { expirationTtl: 300 }
   );
 
-  log('info', 'Registration challenge created', { 
-    username, 
-    userId, 
-    challengeLength: serializedOptions.challenge.length 
-  });
+  log('info', 'Registration challenge created', { username, userId });
 
   return new Response(JSON.stringify(serializedOptions), {
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -325,7 +350,7 @@ async function handleRegistrationComplete(request, env, origin) {
   const body = await request.json();
   
   log('info', 'Registration complete attempt', { 
-    credentialId: body.id,
+    credentialId: body.id?.substring(0, 10) + '...',
     origin 
   });
 
@@ -346,7 +371,7 @@ async function handleRegistrationComplete(request, env, origin) {
   const challengeData = await env.AUTH_KV.get(`challenge:${challenge}`);
   
   if (!challengeData) {
-    log('warn', 'Registration failed - invalid challenge', { challenge: challenge.substring(0, 10) + '...' });
+    log('warn', 'Registration failed - invalid or expired challenge');
     return new Response(JSON.stringify({ error: 'Invalid or expired challenge' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -369,9 +394,7 @@ async function handleRegistrationComplete(request, env, origin) {
   } catch (error) {
     log('error', 'Registration verification failed', {
       username,
-      error: error.message,
-      expectedOrigin,
-      expectedRPID: env.RP_ID
+      error: error.message
     });
     return new Response(JSON.stringify({ error: `Verification failed: ${error.message}` }), {
       status: 400,
@@ -380,12 +403,12 @@ async function handleRegistrationComplete(request, env, origin) {
   }
 
   if (verification.verified) {
-    // Save user data
+    // Save user data - use the client's original credential ID (body.id)
     const userData = {
       id: userId,
       username,
       credentials: [{
-        credentialID: uint8ArrayToBase64(verification.registrationInfo.credentialID),
+        credentialID: body.id,
         credentialPublicKey: uint8ArrayToBase64(verification.registrationInfo.credentialPublicKey),
         counter: verification.registrationInfo.counter,
         transports: body.response.transports || [],
@@ -397,6 +420,9 @@ async function handleRegistrationComplete(request, env, origin) {
     await saveUser(env, userId, userData);
     await saveUsernameMapping(env, username, userId);
     
+    // Create credential ID index for usernameless authentication
+    await env.AUTH_KV.put(`credential:${body.id}`, userId);
+    
     // Clean up challenge
     await env.AUTH_KV.delete(`challenge:${challenge}`);
 
@@ -405,8 +431,7 @@ async function handleRegistrationComplete(request, env, origin) {
 
     log('info', 'Registration successful', { 
       username, 
-      userId,
-      credentialId: body.id
+      userId
     });
 
     return new Response(JSON.stringify({ 
@@ -426,50 +451,59 @@ async function handleRegistrationComplete(request, env, origin) {
 }
 
 async function handleAuthenticationBegin(request, env, origin) {
-  const { username } = await request.json();
+  const body = await request.json();
+  const { username } = body;
   
-  if (!username) {
-    return new Response(JSON.stringify({ error: 'Username is required' }), {
-      status: 400,
+  log('info', 'Authentication begin', { username: username || 'usernameless', origin });
+  
+  try {
+    const options = await generateAuthenticationOptions({
+      rpID: env.RP_ID,
+      allowCredentials: [],
+      userVerification: 'preferred',
+    });
+
+    const serializedOptions = serializeAuthenticationOptions(options);
+
+    await env.AUTH_KV.put(
+      `auth-challenge:${serializedOptions.challenge}`, 
+      JSON.stringify({ type: 'usernameless', timestamp: Date.now() }), 
+      { expirationTtl: 300 }
+    );
+
+    log('info', 'Authentication challenge created');
+
+    return new Response(JSON.stringify(serializedOptions), {
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
+    });
+  } catch (error) {
+    log('error', 'Failed to generate authentication options', {
+      error: error.message
+    });
+    
+    return new Response(JSON.stringify({ error: 'Failed to generate authentication options' }), {
+      status: 500,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
-
-  const user = await getUserByUsername(env, username);
-  if (!user) {
-    return new Response(JSON.stringify({ error: 'User not found' }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
-    });
-  }
-
-  const options = await generateAuthenticationOptions({
-    rpID: env.RP_ID,
-    allowCredentials: user.credentials.map(cred => ({
-      id: base64ToUint8Array(cred.credentialID),
-      type: 'public-key',
-      transports: cred.transports,
-    })),
-    userVerification: 'preferred',
-  });
-
-  // Serialize options for client
-  const serializedOptions = serializeAuthenticationOptions(options);
-
-  // Store challenge with user ID using the serialized challenge
-  await env.AUTH_KV.put(
-    `auth-challenge:${serializedOptions.challenge}`, 
-    user.id, 
-    { expirationTtl: 300 } // 5 minutes
-  );
-
-  return new Response(JSON.stringify(serializedOptions), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
-  });
 }
 
 async function handleAuthenticationComplete(request, env, origin) {
   const body = await request.json();
+  
+  log('info', 'Authentication complete attempt', { 
+    credentialId: body.id?.substring(0, 10) + '...',
+    origin
+  });
+
+  // Validate body.id before processing
+  if (!body.id || typeof body.id !== 'string') {
+    log('error', 'Authentication failed - invalid credential ID');
+    return new Response(JSON.stringify({ error: 'Invalid credential ID' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
+    });
+  }
   
   // Extract challenge from clientDataJSON
   let challenge;
@@ -477,35 +511,62 @@ async function handleAuthenticationComplete(request, env, origin) {
     const clientDataJSON = JSON.parse(atob(body.response.clientDataJSON));
     challenge = clientDataJSON.challenge;
   } catch (error) {
-    console.error('Failed to extract challenge from clientDataJSON:', error);
+    log('error', 'Failed to extract challenge from clientDataJSON', { error: error.message });
     return new Response(JSON.stringify({ error: 'Invalid client data' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
-  // Get stored user ID for this challenge
-  const userId = await env.AUTH_KV.get(`auth-challenge:${challenge}`);
-  if (!userId) {
+  // Get stored challenge data for usernameless authentication
+  const challengeData = await env.AUTH_KV.get(`auth-challenge:${challenge}`);
+  if (!challengeData) {
+    log('warn', 'Authentication failed - invalid or expired challenge');
     return new Response(JSON.stringify({ error: 'Invalid or expired challenge' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
-  const user = await getUser(env, userId);
-  if (!user) {
-    return new Response(JSON.stringify({ error: 'User not found' }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
-    });
+  let challengeInfo;
+  try {
+    challengeInfo = JSON.parse(challengeData);
+  } catch (error) {
+    // Handle legacy challenge format (just userId as string)
+    challengeInfo = { type: 'legacy', userId: challengeData };
+  }
+
+  let user;
+  if (challengeInfo.type === 'usernameless') {
+    user = await findUserByCredentialId(env, body.id);
+    if (!user) {
+      log('warn', 'Usernameless authentication failed - no user found for credential');
+      return new Response(JSON.stringify({ error: 'No user found for this credential' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
+      });
+    }
+  } else {
+    // Legacy format - get user by stored userId
+    const userId = challengeInfo.userId || challengeInfo;
+    user = await getUser(env, userId);
+    if (!user) {
+      log('error', 'Authentication failed - user not found', { userId });
+      return new Response(JSON.stringify({ error: 'User not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
+      });
+    }
   }
 
   // Find the credential being used
-  const credentialID = uint8ArrayToBase64(base64UrlToUint8Array(body.id));
-  const credential = user.credentials.find(cred => cred.credentialID === credentialID);
+  let credential = user.credentials.find(cred => cred.credentialID === body.id);
   
   if (!credential) {
+    log('warn', 'Authentication failed - credential not found', { 
+      username: user.username,
+      availableCredentials: user.credentials.length
+    });
     return new Response(JSON.stringify({ error: 'Credential not found' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -516,19 +577,26 @@ async function handleAuthenticationComplete(request, env, origin) {
 
   let verification;
   try {
+    // Convert the stored base64URL credential ID back to base64 for verification
+    const credentialIdBase64 = base64UrlToBase64(credential.credentialID);
+    
     verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge: challenge,
       expectedOrigin: expectedOrigin,
       expectedRPID: env.RP_ID,
       authenticator: {
-        credentialID: base64ToUint8Array(credential.credentialID),
+        credentialID: base64ToUint8Array(credentialIdBase64),
         credentialPublicKey: base64ToUint8Array(credential.credentialPublicKey),
         counter: credential.counter,
         transports: credential.transports,
       },
     });
   } catch (error) {
+    log('error', 'Authentication verification failed', {
+      username: user.username,
+      error: error.message
+    });
     return new Response(JSON.stringify({ error: 'Verification failed' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -538,23 +606,29 @@ async function handleAuthenticationComplete(request, env, origin) {
   if (verification.verified) {
     // Update counter
     credential.counter = verification.authenticationInfo.newCounter;
-    await saveUser(env, userId, user);
+    await saveUser(env, user.id, user);
     
     // Clean up challenge
     await env.AUTH_KV.delete(`auth-challenge:${challenge}`);
 
     // Create JWT token
-    const token = await createJWT(userId, env);
+    const token = await createJWT(user.id, env);
+
+    log('info', 'Authentication successful', { 
+      username: user.username,
+      authType: challengeInfo.type || 'legacy'
+    });
 
     return new Response(JSON.stringify({ 
       verified: true, 
       token,
-      user: { id: userId, username: user.username }
+      user: { id: user.id, username: user.username }
     }), {
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
+  log('warn', 'Authentication failed - verification returned false', { username: user.username });
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
