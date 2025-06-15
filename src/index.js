@@ -54,11 +54,6 @@ async function verifyJWT(token, env) {
   }
 }
 
-// Helper function to generate user ID
-function generateUserId() {
-  return crypto.randomUUID();
-}
-
 // Helper function to get user data
 async function getUser(env, userId) {
   const userData = await env.AUTH_KV.get(`user:${userId}`);
@@ -70,27 +65,10 @@ async function saveUser(env, userId, userData) {
   await env.AUTH_KV.put(`user:${userId}`, JSON.stringify(userData));
 }
 
-// Helper function to get user by username
-async function getUserByUsername(env, username) {
-  const userId = await env.AUTH_KV.get(`username:${username}`);
-  if (!userId) return null;
-  return await getUser(env, userId);
-}
-
-// Helper function to save username mapping
-async function saveUsernameMapping(env, username, userId) {
-  await env.AUTH_KV.put(`username:${username}`, userId);
-}
-
 // Helper function to find user by credential ID (for usernameless authentication)
 async function findUserByCredentialId(env, credentialId) {
-  // Try to get user ID from credential index
-  const userId = await env.AUTH_KV.get(`credential:${credentialId}`);
-  if (userId) {
-    return await getUser(env, userId);
-  }
-  
-  return null;
+  // Since we use credential ID as the primary key, directly get the user
+  return await getUser(env, credentialId);
 }
 
 // Helper function to check if origin is allowed (subdomain of sanjaysingh.net)
@@ -305,22 +283,14 @@ async function handleRegistrationBegin(request, env, origin) {
     });
   }
 
-  // Check if user already exists
-  const existingUser = await getUserByUsername(env, username);
-  if (existingUser) {
-    log('warn', 'Registration failed - user exists', { username });
-    return new Response(JSON.stringify({ error: 'User already exists' }), {
-      status: 409,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
-    });
-  }
-
-  const userId = generateUserId();
+  // We'll use the credential ID as the user ID, but we don't have it yet
+  // So we'll generate a temporary ID for the WebAuthn userID field
+  const tempUserId = crypto.randomUUID();
   
   const options = await generateRegistrationOptions({
     rpName: env.RP_NAME,
     rpID: env.RP_ID,
-    userID: isoUint8Array.fromUTF8String(userId),
+    userID: isoUint8Array.fromUTF8String(tempUserId),
     userName: username,
     userDisplayName: username,
     attestationType: 'none',
@@ -335,11 +305,11 @@ async function handleRegistrationBegin(request, env, origin) {
 
   await env.AUTH_KV.put(
     `challenge:${serializedOptions.challenge}`, 
-    JSON.stringify({ userId, username, originalChallenge: options.challenge }), 
+    JSON.stringify({ tempUserId, username, originalChallenge: options.challenge }), 
     { expirationTtl: 300 }
   );
 
-  log('info', 'Registration challenge created', { username, userId });
+  log('info', 'Registration challenge created', { username, tempUserId });
 
   return new Response(JSON.stringify(serializedOptions), {
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -378,8 +348,8 @@ async function handleRegistrationComplete(request, env, origin) {
     });
   }
 
-  const { userId, username, originalChallenge } = JSON.parse(challengeData);
-  log('info', 'Challenge validated', { username, userId });
+  const { tempUserId, username, originalChallenge } = JSON.parse(challengeData);
+  log('info', 'Challenge validated', { username, tempUserId });
 
   const expectedOrigin = isAllowedOrigin(origin) ? origin : env.ORIGIN;
 
@@ -403,9 +373,9 @@ async function handleRegistrationComplete(request, env, origin) {
   }
 
   if (verification.verified) {
-    // Save user data - use the client's original credential ID (body.id)
+    // Save user data using credential ID as the primary key
     const userData = {
-      id: userId,
+      id: body.id, // Use credential ID as user ID
       username,
       credentials: [{
         credentialID: body.id,
@@ -417,27 +387,24 @@ async function handleRegistrationComplete(request, env, origin) {
       createdAt: new Date().toISOString()
     };
 
-    await saveUser(env, userId, userData);
-    await saveUsernameMapping(env, username, userId);
-    
-    // Create credential ID index for usernameless authentication
-    await env.AUTH_KV.put(`credential:${body.id}`, userId);
+    // Store user data with credential ID as the key - only 1 KV entry needed!
+    await saveUser(env, body.id, userData);
     
     // Clean up challenge
     await env.AUTH_KV.delete(`challenge:${challenge}`);
 
-    // Create JWT token
-    const token = await createJWT(userId, env);
+    // Create JWT token using credential ID
+    const token = await createJWT(body.id, env);
 
     log('info', 'Registration successful', { 
       username, 
-      userId
+      credentialId: body.id
     });
 
     return new Response(JSON.stringify({ 
       verified: true, 
       token,
-      user: { id: userId, username }
+      user: { id: body.id, username }
     }), {
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
@@ -547,7 +514,7 @@ async function handleAuthenticationComplete(request, env, origin) {
       });
     }
   } else {
-    // Legacy format - get user by stored userId
+    // Legacy format - get user by stored userId (for backward compatibility)
     const userId = challengeInfo.userId || challengeInfo;
     user = await getUser(env, userId);
     if (!user) {
@@ -611,11 +578,12 @@ async function handleAuthenticationComplete(request, env, origin) {
     // Clean up challenge
     await env.AUTH_KV.delete(`auth-challenge:${challenge}`);
 
-    // Create JWT token
+    // Create JWT token using credential ID
     const token = await createJWT(user.id, env);
 
     log('info', 'Authentication successful', { 
       username: user.username,
+      credentialId: user.id,
       authType: challengeInfo.type || 'legacy'
     });
 
