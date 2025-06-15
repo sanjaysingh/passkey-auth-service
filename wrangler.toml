@@ -2,6 +2,10 @@ name = "passkey-auth-service"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+routes = [
+  { pattern = "authservice.sanjaysingh.net", custom_domain = true }
+]
+
 [vars]
 RP_ID = "sanjaysingh.net"
 RP_NAME = "sanjaysingh.net auth service"
