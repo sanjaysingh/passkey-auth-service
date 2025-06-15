@@ -14,3 +14,6 @@ ORIGIN = "https://sanjaysingh.net"
 [[kv_namespaces]]
 binding = "AUTH_KV"
 id = "06d30ff8c8394e3e88424bb190f395c4" 
+
+[observability]
+enabled = true

@@ -7,6 +7,18 @@ import {
 import { isoUint8Array, isoBase64URL } from '@simplewebauthn/server/helpers';
 import { SignJWT, jwtVerify } from 'jose';
 
+// Helper function to log with context
+function log(level, message, context = {}) {
+  const timestamp = new Date().toISOString();
+  const logData = {
+    timestamp,
+    level,
+    message,
+    ...context
+  };
+  console.log(JSON.stringify(logData));
+}
+
 // Helper function to generate JWT secret
 async function getJWTSecret(env) {
   const encoder = new TextEncoder();
@@ -175,33 +187,68 @@ export default {
     const path = url.pathname;
     const method = request.method;
     const origin = request.headers.get('Origin');
+    
+    // Log incoming request
+    log('info', 'Incoming request', {
+      method,
+      path,
+      origin,
+      userAgent: request.headers.get('User-Agent')?.substring(0, 100)
+    });
 
     // Handle CORS preflight
     if (method === 'OPTIONS') {
+      log('info', 'CORS preflight request', { origin });
       return handleOptions(origin);
     }
 
     try {
+      let result;
       switch (path) {
         case '/auth/register/begin':
-          return await handleRegistrationBegin(request, env, origin);
+          result = await handleRegistrationBegin(request, env, origin);
+          break;
         case '/auth/register/complete':
-          return await handleRegistrationComplete(request, env, origin);
+          result = await handleRegistrationComplete(request, env, origin);
+          break;
         case '/auth/login/begin':
-          return await handleAuthenticationBegin(request, env, origin);
+          result = await handleAuthenticationBegin(request, env, origin);
+          break;
         case '/auth/login/complete':
-          return await handleAuthenticationComplete(request, env, origin);
+          result = await handleAuthenticationComplete(request, env, origin);
+          break;
         case '/auth/verify':
-          return await handleTokenVerification(request, env, origin);
+          result = await handleTokenVerification(request, env, origin);
+          break;
         case '/auth/user':
-          return await handleGetUser(request, env, origin);
+          result = await handleGetUser(request, env, origin);
+          break;
         default:
-          return new Response('Not Found', { 
+          log('warn', 'Unknown endpoint accessed', { path, method });
+          result = new Response('Not Found', { 
             status: 404,
             headers: getCorsHeaders(origin)
           });
       }
+      
+      // Log successful response
+      log('info', 'Request completed', {
+        path,
+        method,
+        status: result.status,
+        responseTime: Date.now() // Basic timing
+      });
+      
+      return result;
     } catch (error) {
+      // Enhanced error logging
+      log('error', 'Request failed', {
+        path,
+        method,
+        error: error.message,
+        stack: error.stack?.substring(0, 500)
+      });
+      
       console.error('Error:', error);
       return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
         status: 500,
@@ -217,7 +264,10 @@ export default {
 async function handleRegistrationBegin(request, env, origin) {
   const { username } = await request.json();
   
+  log('info', 'Registration begin', { username, origin });
+  
   if (!username) {
+    log('warn', 'Registration failed - no username', { origin });
     return new Response(JSON.stringify({ error: 'Username is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -227,6 +277,7 @@ async function handleRegistrationBegin(request, env, origin) {
   // Check if user already exists
   const existingUser = await getUserByUsername(env, username);
   if (existingUser) {
+    log('warn', 'Registration failed - user exists', { username });
     return new Response(JSON.stringify({ error: 'User already exists' }), {
       status: 409,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -259,6 +310,12 @@ async function handleRegistrationBegin(request, env, origin) {
     { expirationTtl: 300 } // 5 minutes
   );
 
+  log('info', 'Registration challenge created', { 
+    username, 
+    userId, 
+    challengeLength: serializedOptions.challenge.length 
+  });
+
   return new Response(JSON.stringify(serializedOptions), {
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
@@ -267,16 +324,18 @@ async function handleRegistrationBegin(request, env, origin) {
 async function handleRegistrationComplete(request, env, origin) {
   const body = await request.json();
   
-  console.log('Registration complete - body:', JSON.stringify(body, null, 2));
+  log('info', 'Registration complete attempt', { 
+    credentialId: body.id,
+    origin 
+  });
 
   // Extract challenge from clientDataJSON
   let challenge;
   try {
     const clientDataJSON = JSON.parse(atob(body.response.clientDataJSON));
     challenge = clientDataJSON.challenge;
-    console.log('Extracted challenge from clientDataJSON:', challenge);
   } catch (error) {
-    console.error('Failed to extract challenge from clientDataJSON:', error);
+    log('error', 'Failed to extract challenge', { error: error.message });
     return new Response(JSON.stringify({ error: 'Invalid client data' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -285,10 +344,9 @@ async function handleRegistrationComplete(request, env, origin) {
 
   // Get stored challenge data
   const challengeData = await env.AUTH_KV.get(`challenge:${challenge}`);
-  console.log('Stored challenge data:', challengeData);
   
   if (!challengeData) {
-    console.log('Challenge not found in storage');
+    log('warn', 'Registration failed - invalid challenge', { challenge: challenge.substring(0, 10) + '...' });
     return new Response(JSON.stringify({ error: 'Invalid or expired challenge' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -296,6 +354,7 @@ async function handleRegistrationComplete(request, env, origin) {
   }
 
   const { userId, username, originalChallenge } = JSON.parse(challengeData);
+  log('info', 'Challenge validated', { username, userId });
 
   const expectedOrigin = isAllowedOrigin(origin) ? origin : env.ORIGIN;
 
@@ -308,10 +367,12 @@ async function handleRegistrationComplete(request, env, origin) {
       expectedRPID: env.RP_ID,
     });
   } catch (error) {
-    console.error('Registration verification error:', error);
-    console.error('Expected Origin:', expectedOrigin);
-    console.error('Expected RPID:', env.RP_ID);
-    console.error('Original Challenge:', originalChallenge);
+    log('error', 'Registration verification failed', {
+      username,
+      error: error.message,
+      expectedOrigin,
+      expectedRPID: env.RP_ID
+    });
     return new Response(JSON.stringify({ error: `Verification failed: ${error.message}` }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -327,19 +388,26 @@ async function handleRegistrationComplete(request, env, origin) {
         credentialID: uint8ArrayToBase64(verification.registrationInfo.credentialID),
         credentialPublicKey: uint8ArrayToBase64(verification.registrationInfo.credentialPublicKey),
         counter: verification.registrationInfo.counter,
-        transports: body.response.transports,
+        transports: body.response.transports || [],
+        createdAt: new Date().toISOString()
       }],
-      createdAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
     };
 
     await saveUser(env, userId, userData);
     await saveUsernameMapping(env, username, userId);
     
     // Clean up challenge
-    await env.AUTH_KV.delete(`challenge:${originalChallenge}`);
+    await env.AUTH_KV.delete(`challenge:${challenge}`);
 
     // Create JWT token
     const token = await createJWT(userId, env);
+
+    log('info', 'Registration successful', { 
+      username, 
+      userId,
+      credentialId: body.id
+    });
 
     return new Response(JSON.stringify({ 
       verified: true, 
@@ -350,6 +418,7 @@ async function handleRegistrationComplete(request, env, origin) {
     });
   }
 
+  log('warn', 'Registration verification failed', { username });
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
