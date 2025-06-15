@@ -1,0 +1,22 @@
+{
+  "name": "passkey-auth-service",
+  "version": "1.0.0",
+  "description": "Production-ready passkey authentication service built for Cloudflare Workers",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": ["passkey", "webauthn", "authentication", "cloudflare-workers", "jwt"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@simplewebauthn/server": "^10.0.0",
+    "jose": "^5.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+} 
