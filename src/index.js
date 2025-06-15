@@ -70,20 +70,47 @@ async function saveUsernameMapping(env, username, userId) {
   await env.AUTH_KV.put(`username:${username}`, userId);
 }
 
+// Helper function to check if origin is allowed (subdomain of sanjaysingh.net)
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  
+  try {
+    const url = new URL(origin);
+    
+    // Allow exact domain and all subdomains of sanjaysingh.net
+    if (url.hostname === 'sanjaysingh.net' || url.hostname.endsWith('.sanjaysingh.net')) {
+      return true;
+    }
+    
+    // Allow localhost for development (any port)
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
 // CORS headers
-function getCorsHeaders() {
+function getCorsHeaders(origin) {
+  // Check if the origin is allowed
+  const allowOrigin = isAllowedOrigin(origin) ? origin : 'https://sanjaysingh.net';
+  
   return {
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Credentials': 'true',
   };
 }
 
 // Handle OPTIONS requests for CORS
-function handleOptions() {
+function handleOptions(origin) {
   return new Response(null, {
     status: 204,
-    headers: getCorsHeaders(),
+    headers: getCorsHeaders(origin),
   });
 }
 
@@ -147,30 +174,31 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    const origin = request.headers.get('Origin');
 
     // Handle CORS preflight
     if (method === 'OPTIONS') {
-      return handleOptions();
+      return handleOptions(origin);
     }
 
     try {
       switch (path) {
         case '/auth/register/begin':
-          return await handleRegistrationBegin(request, env);
+          return await handleRegistrationBegin(request, env, origin);
         case '/auth/register/complete':
-          return await handleRegistrationComplete(request, env);
+          return await handleRegistrationComplete(request, env, origin);
         case '/auth/login/begin':
-          return await handleAuthenticationBegin(request, env);
+          return await handleAuthenticationBegin(request, env, origin);
         case '/auth/login/complete':
-          return await handleAuthenticationComplete(request, env);
+          return await handleAuthenticationComplete(request, env, origin);
         case '/auth/verify':
-          return await handleTokenVerification(request, env);
+          return await handleTokenVerification(request, env, origin);
         case '/auth/user':
-          return await handleGetUser(request, env);
+          return await handleGetUser(request, env, origin);
         default:
           return new Response('Not Found', { 
             status: 404,
-            headers: getCorsHeaders()
+            headers: getCorsHeaders(origin)
           });
       }
     } catch (error) {
@@ -179,20 +207,20 @@ export default {
         status: 500,
         headers: {
           'Content-Type': 'application/json',
-          ...getCorsHeaders()
+          ...getCorsHeaders(origin)
         }
       });
     }
   }
 };
 
-async function handleRegistrationBegin(request, env) {
+async function handleRegistrationBegin(request, env, origin) {
   const { username } = await request.json();
   
   if (!username) {
     return new Response(JSON.stringify({ error: 'Username is required' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -201,7 +229,7 @@ async function handleRegistrationBegin(request, env) {
   if (existingUser) {
     return new Response(JSON.stringify({ error: 'User already exists' }), {
       status: 409,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -232,11 +260,11 @@ async function handleRegistrationBegin(request, env) {
   );
 
   return new Response(JSON.stringify(serializedOptions), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 }
 
-async function handleRegistrationComplete(request, env) {
+async function handleRegistrationComplete(request, env, origin) {
   const body = await request.json();
   
   console.log('Registration complete - body:', JSON.stringify(body, null, 2));
@@ -251,7 +279,7 @@ async function handleRegistrationComplete(request, env) {
     console.error('Failed to extract challenge from clientDataJSON:', error);
     return new Response(JSON.stringify({ error: 'Invalid client data' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -263,28 +291,30 @@ async function handleRegistrationComplete(request, env) {
     console.log('Challenge not found in storage');
     return new Response(JSON.stringify({ error: 'Invalid or expired challenge' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
   const { userId, username, originalChallenge } = JSON.parse(challengeData);
+
+  const expectedOrigin = isAllowedOrigin(origin) ? origin : env.ORIGIN;
 
   let verification;
   try {
     verification = await verifyRegistrationResponse({
       response: body,
       expectedChallenge: originalChallenge,
-      expectedOrigin: env.ORIGIN,
+      expectedOrigin: expectedOrigin,
       expectedRPID: env.RP_ID,
     });
   } catch (error) {
     console.error('Registration verification error:', error);
-    console.error('Expected Origin:', env.ORIGIN);
+    console.error('Expected Origin:', expectedOrigin);
     console.error('Expected RPID:', env.RP_ID);
     console.error('Original Challenge:', originalChallenge);
     return new Response(JSON.stringify({ error: `Verification failed: ${error.message}` }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -316,23 +346,23 @@ async function handleRegistrationComplete(request, env) {
       token,
       user: { id: userId, username }
     }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 }
 
-async function handleAuthenticationBegin(request, env) {
+async function handleAuthenticationBegin(request, env, origin) {
   const { username } = await request.json();
   
   if (!username) {
     return new Response(JSON.stringify({ error: 'Username is required' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -340,7 +370,7 @@ async function handleAuthenticationBegin(request, env) {
   if (!user) {
     return new Response(JSON.stringify({ error: 'User not found' }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -365,11 +395,11 @@ async function handleAuthenticationBegin(request, env) {
   );
 
   return new Response(JSON.stringify(serializedOptions), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 }
 
-async function handleAuthenticationComplete(request, env) {
+async function handleAuthenticationComplete(request, env, origin) {
   const body = await request.json();
   
   // Extract challenge from clientDataJSON
@@ -381,7 +411,7 @@ async function handleAuthenticationComplete(request, env) {
     console.error('Failed to extract challenge from clientDataJSON:', error);
     return new Response(JSON.stringify({ error: 'Invalid client data' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -390,7 +420,7 @@ async function handleAuthenticationComplete(request, env) {
   if (!userId) {
     return new Response(JSON.stringify({ error: 'Invalid or expired challenge' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -398,7 +428,7 @@ async function handleAuthenticationComplete(request, env) {
   if (!user) {
     return new Response(JSON.stringify({ error: 'User not found' }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -409,16 +439,18 @@ async function handleAuthenticationComplete(request, env) {
   if (!credential) {
     return new Response(JSON.stringify({ error: 'Credential not found' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
+
+  const expectedOrigin = isAllowedOrigin(origin) ? origin : env.ORIGIN;
 
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge: challenge,
-      expectedOrigin: env.ORIGIN,
+      expectedOrigin: expectedOrigin,
       expectedRPID: env.RP_ID,
       authenticator: {
         credentialID: base64ToUint8Array(credential.credentialID),
@@ -430,7 +462,7 @@ async function handleAuthenticationComplete(request, env) {
   } catch (error) {
     return new Response(JSON.stringify({ error: 'Verification failed' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -450,22 +482,22 @@ async function handleAuthenticationComplete(request, env) {
       token,
       user: { id: userId, username: user.username }
     }), {
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 }
 
-async function handleTokenVerification(request, env) {
+async function handleTokenVerification(request, env, origin) {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return new Response(JSON.stringify({ error: 'Missing or invalid token' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -475,7 +507,7 @@ async function handleTokenVerification(request, env) {
   if (!payload) {
     return new Response(JSON.stringify({ error: 'Invalid token' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -483,7 +515,7 @@ async function handleTokenVerification(request, env) {
   if (!user) {
     return new Response(JSON.stringify({ error: 'User not found' }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -492,16 +524,16 @@ async function handleTokenVerification(request, env) {
     userId: payload.userId,
     user: { id: user.id, username: user.username }
   }), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 }
 
-async function handleGetUser(request, env) {
+async function handleGetUser(request, env, origin) {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return new Response(JSON.stringify({ error: 'Missing or invalid token' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -511,7 +543,7 @@ async function handleGetUser(request, env) {
   if (!payload) {
     return new Response(JSON.stringify({ error: 'Invalid token' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -519,7 +551,7 @@ async function handleGetUser(request, env) {
   if (!user) {
     return new Response(JSON.stringify({ error: 'User not found' }), {
       status: 404,
-      headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
   }
 
@@ -528,6 +560,6 @@ async function handleGetUser(request, env) {
     username: user.username,
     createdAt: user.createdAt
   }), {
-    headers: { 'Content-Type': 'application/json', ...getCorsHeaders() }
+    headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
   });
 } 

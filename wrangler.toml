@@ -4,8 +4,8 @@ compatibility_date = "2024-01-01"
 
 [vars]
 RP_ID = "sanjaysingh.net"
-RP_NAME = "Passkey Auth Service"
-ORIGIN = "https://auth.sanjaysingh.net"
+RP_NAME = "sanjaysingh.net auth service"
+ORIGIN = "https://sanjaysingh.net"
 
 # Secrets should be set using: wrangler secret put JWT_SECRET
 # JWT_SECRET will be injected as an environment variable
