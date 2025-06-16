@@ -22,7 +22,13 @@ function log(level, message, context = {}) {
 // Helper function to generate JWT secret
 async function getJWTSecret(env) {
   const encoder = new TextEncoder();
-  const secretString = env.JWT_SECRET || 'fallback-secret-key';
+  const secretString = env.JWT_SECRET;
+  
+  if (!secretString) {
+    throw new Error('JWT_SECRET environment variable is required');
+  }
+  
+  
   return await crypto.subtle.importKey(
     'raw',
     encoder.encode(secretString),
@@ -88,6 +94,23 @@ async function findUserByCredentialId(env, credentialId) {
   return await getUser(env, credentialId);
 }
 
+// Helper function to validate username
+function validateUsername(username) {
+  if (!username || typeof username !== 'string') {
+    return { valid: false, error: 'Username must be a non-empty string' };
+  }
+  
+  if (username.length < 3 || username.length > 50) {
+    return { valid: false, error: 'Username must be between 3 and 50 characters' };
+  }
+  
+  if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+    return { valid: false, error: 'Username can only contain letters, numbers, dots, underscores, and hyphens' };
+  }
+  
+  return { valid: true };
+}
+
 // Helper function to check if origin is allowed (subdomain of sanjaysingh.net)
 function isAllowedOrigin(origin) {
   if (!origin) return false;
@@ -100,10 +123,7 @@ function isAllowedOrigin(origin) {
       return true;
     }
     
-    // Allow localhost for development (any port)
-    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
-      return true;
-    }
+    // Localhost access removed for security - use proper domains only
     
     return false;
   } catch (error) {
@@ -111,7 +131,7 @@ function isAllowedOrigin(origin) {
   }
 }
 
-// CORS headers
+// CORS headers with security headers
 function getCorsHeaders(origin) {
   // Check if the origin is allowed
   const allowOrigin = isAllowedOrigin(origin) ? origin : 'https://sanjaysingh.net';
@@ -121,6 +141,12 @@ function getCorsHeaders(origin) {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Credentials': 'true',
+    // Security headers
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': "default-src 'none'",
   };
 }
 
@@ -290,11 +316,12 @@ export default {
 async function handleRegistrationBegin(request, env, origin) {
   const { username } = await request.json();
   
-  log('info', 'Registration begin', { username, origin });
+  log('info', 'Registration begin', { origin });
   
-  if (!username) {
-    log('warn', 'Registration failed - no username');
-    return new Response(JSON.stringify({ error: 'Username is required' }), {
+  const usernameValidation = validateUsername(username);
+  if (!usernameValidation.valid) {
+    log('warn', 'Registration failed - invalid username');
+    return new Response(JSON.stringify({ error: usernameValidation.error }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
     });
@@ -326,7 +353,7 @@ async function handleRegistrationBegin(request, env, origin) {
     { expirationTtl: 300 }
   );
 
-  log('info', 'Registration challenge created', { username, tempUserId });
+  log('info', 'Registration challenge created');
 
   return new Response(JSON.stringify(serializedOptions), {
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -336,10 +363,7 @@ async function handleRegistrationBegin(request, env, origin) {
 async function handleRegistrationComplete(request, env, origin) {
   const body = await request.json();
   
-  log('info', 'Registration complete attempt', { 
-    credentialId: body.id?.substring(0, 10) + '...',
-    origin 
-  });
+  log('info', 'Registration complete attempt', { origin });
 
   // Extract challenge from clientDataJSON
   let challenge;
@@ -366,7 +390,7 @@ async function handleRegistrationComplete(request, env, origin) {
   }
 
   const { tempUserId, username, originalChallenge } = JSON.parse(challengeData);
-  log('info', 'Challenge validated', { username, tempUserId });
+  log('info', 'Challenge validated');
 
   const expectedOrigin = isAllowedOrigin(origin) ? origin : env.ORIGIN;
 
@@ -380,7 +404,6 @@ async function handleRegistrationComplete(request, env, origin) {
     });
   } catch (error) {
     log('error', 'Registration verification failed', {
-      username,
       error: error.message
     });
     return new Response(JSON.stringify({ error: `Verification failed: ${error.message}` }), {
@@ -413,10 +436,7 @@ async function handleRegistrationComplete(request, env, origin) {
     // Create JWT token using credential ID
     const token = await createJWT(body.id, env);
 
-    log('info', 'Registration successful', { 
-      username, 
-      credentialId: body.id
-    });
+    log('info', 'Registration successful');
 
     return new Response(JSON.stringify({ 
       verified: true, 
@@ -427,7 +447,7 @@ async function handleRegistrationComplete(request, env, origin) {
     });
   }
 
-  log('warn', 'Registration verification failed', { username });
+  log('warn', 'Registration verification failed');
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -438,7 +458,7 @@ async function handleAuthenticationBegin(request, env, origin) {
   const body = await request.json();
   const { username } = body;
   
-  log('info', 'Authentication begin', { username: username || 'usernameless', origin });
+  log('info', 'Authentication begin', { origin });
   
   try {
     const options = await generateAuthenticationOptions({
@@ -475,10 +495,7 @@ async function handleAuthenticationBegin(request, env, origin) {
 async function handleAuthenticationComplete(request, env, origin) {
   const body = await request.json();
   
-  log('info', 'Authentication complete attempt', { 
-    credentialId: body.id?.substring(0, 10) + '...',
-    origin
-  });
+  log('info', 'Authentication complete attempt', { origin });
 
   // Validate body.id before processing
   if (!body.id || typeof body.id !== 'string') {
@@ -535,7 +552,7 @@ async function handleAuthenticationComplete(request, env, origin) {
     const userId = challengeInfo.userId || challengeInfo;
     user = await getUser(env, userId);
     if (!user) {
-      log('error', 'Authentication failed - user not found', { userId });
+      log('error', 'Authentication failed - user not found');
       return new Response(JSON.stringify({ error: 'User not found' }), {
         status: 404,
         headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -547,10 +564,7 @@ async function handleAuthenticationComplete(request, env, origin) {
   let credential = user.credentials.find(cred => cred.credentialID === body.id);
   
   if (!credential) {
-    log('warn', 'Authentication failed - credential not found', { 
-      username: user.username,
-      availableCredentials: user.credentials.length
-    });
+    log('warn', 'Authentication failed - credential not found');
     return new Response(JSON.stringify({ error: 'Credential not found' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
@@ -578,7 +592,6 @@ async function handleAuthenticationComplete(request, env, origin) {
     });
   } catch (error) {
     log('error', 'Authentication verification failed', {
-      username: user.username,
       error: error.message
     });
     return new Response(JSON.stringify({ error: 'Verification failed' }), {
@@ -599,8 +612,6 @@ async function handleAuthenticationComplete(request, env, origin) {
     const token = await createJWT(user.id, env);
 
     log('info', 'Authentication successful', { 
-      username: user.username,
-      credentialId: user.id,
       authType: challengeInfo.type || 'legacy'
     });
 
@@ -613,7 +624,7 @@ async function handleAuthenticationComplete(request, env, origin) {
     });
   }
 
-  log('warn', 'Authentication failed - verification returned false', { username: user.username });
+  log('warn', 'Authentication failed - verification returned false');
   return new Response(JSON.stringify({ verified: false }), {
     status: 400,
     headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
