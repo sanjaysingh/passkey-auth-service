@@ -35,11 +35,18 @@ async function getJWTSecret(env) {
 // Helper function to create JWT token
 async function createJWT(userId, env) {
   const secret = await getJWTSecret(env);
-  const jwt = await new SignJWT({ userId })
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = await new SignJWT({ 
+    userId,
+    iat: now,      // Issued at
+    exp: now + (1 * 60 * 60)  // Expires in 1 hour (3600 seconds)
+  })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime('24h')
+    .setExpirationTime('1h')  // 1 hour expiration
+    .setNotBefore('0s')       // Valid immediately
     .sign(secret);
+  
   return jwt;
 }
 
@@ -47,7 +54,17 @@ async function createJWT(userId, env) {
 async function verifyJWT(token, env) {
   try {
     const secret = await getJWTSecret(env);
-    const { payload } = await jwtVerify(token, secret);
+    const { payload } = await jwtVerify(token, secret, {
+      clockTolerance: '30s',  // Allow 30 seconds clock skew
+      maxTokenAge: '1h'       // Maximum age of 1 hour
+    });
+    
+    // Additional explicit expiration check
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < now) {
+      return null;
+    }
+    
     return payload;
   } catch (error) {
     return null;
