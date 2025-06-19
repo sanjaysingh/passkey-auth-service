@@ -26,7 +26,7 @@ function saveConfig(config) {
 
 function deployToKV(key, value) {
   try {
-    const command = `wrangler kv:key put --binding=AUTH_KV "config:${key}" "${value}"`;
+    const command = `wrangler kv key put --binding=AUTH_KV "config:${key}" "${value}"`;
     execSync(command, { stdio: 'inherit' });
     console.log(`✅ Deployed ${key} = ${value} to KV store`);
   } catch (error) {

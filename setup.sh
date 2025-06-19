@@ -68,7 +68,7 @@ if command -v node &> /dev/null; then
     REGISTRATION_ALLOWED=$(node -p "JSON.parse(require('fs').readFileSync('config.json', 'utf8'))['User.Registration.Allowed']")
     
     # Deploy configuration to KV store
-    if wrangler kv:key put --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"; then
+    if wrangler kv key put --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"; then
         echo -e "${GREEN}✓ Configuration deployed to KV store${NC}"
         echo "  User.Registration.Allowed: $REGISTRATION_ALLOWED"
     else
@@ -78,7 +78,7 @@ if command -v node &> /dev/null; then
 else
     echo -e "${YELLOW}⚠ Node.js not found, skipping configuration deployment${NC}"
     echo "  You'll need to manually set the configuration using:"
-    echo "  wrangler kv:key put --binding=AUTH_KV \"config:User.Registration.Allowed\" \"true\""
+    echo "  wrangler kv key put --binding=AUTH_KV \"config:User.Registration.Allowed\" \"true\""
 fi
 
 echo ""
