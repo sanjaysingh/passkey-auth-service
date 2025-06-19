@@ -53,9 +53,38 @@ else
     exit 1
 fi
 
+# Deploy initial configuration to KV store
+echo ""
+echo -e "${BLUE}Deploying initial configuration to KV store...${NC}"
+
+# Check if config.json exists
+if [ ! -f "config.json" ]; then
+    echo -e "${RED}✗ config.json not found${NC}"
+    exit 1
+fi
+
+# Read the User.Registration.Allowed setting from config.json
+if command -v node &> /dev/null; then
+    REGISTRATION_ALLOWED=$(node -p "JSON.parse(require('fs').readFileSync('config.json', 'utf8'))['User.Registration.Allowed']")
+    
+    # Deploy configuration to KV store
+    if wrangler kv:key put --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"; then
+        echo -e "${GREEN}✓ Configuration deployed to KV store${NC}"
+        echo "  User.Registration.Allowed: $REGISTRATION_ALLOWED"
+    else
+        echo -e "${RED}✗ Failed to deploy configuration to KV store${NC}"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}⚠ Node.js not found, skipping configuration deployment${NC}"
+    echo "  You'll need to manually set the configuration using:"
+    echo "  wrangler kv:key put --binding=AUTH_KV \"config:User.Registration.Allowed\" \"true\""
+fi
+
 echo ""
 echo -e "${GREEN}✅ Auth Service setup complete!${NC}"
 echo ""
 echo -e "${BLUE}Next steps:${NC}"
 echo "1. Update domain configuration in wrangler.toml"
-echo "2. Run 'npm run deploy' to deploy the service" 
+echo "2. Run 'npm run deploy' to deploy the service"
+echo "3. To disable registration, update config.json and redeploy" 

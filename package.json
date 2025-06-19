@@ -7,7 +7,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "echo \"No tests specified\" && exit 0"
+    "test": "echo \"No tests specified\" && exit 0",
+    "config:show": "node manage-config.js show",
+    "config:deploy": "node manage-config.js deploy",
+    "config:enable-registration": "node manage-config.js enable-registration",
+    "config:disable-registration": "node manage-config.js disable-registration"
   },
   "keywords": ["passkey", "webauthn", "authentication", "cloudflare-workers", "jwt"],
   "author": "Your Name",

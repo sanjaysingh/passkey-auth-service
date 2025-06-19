@@ -250,6 +250,22 @@ function base64UrlToBase64(base64url) {
   return base64;
 }
 
+// Helper function to check if registration is allowed
+async function isRegistrationAllowed(env) {
+  try {
+    const configValue = await env.AUTH_KV.get('config:User.Registration.Allowed');
+    if (configValue === null) {
+      // Default to false if not set (secure by default)
+      return false;
+    }
+    return configValue === 'true';
+  } catch (error) {
+    log('error', 'Failed to check registration status', { error: error.message });
+    // Default to false on error for security
+    return false;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -317,6 +333,16 @@ async function handleRegistrationBegin(request, env, origin) {
   const { username } = await request.json();
   
   log('info', 'Registration begin', { origin });
+  
+  // Check if registration is allowed
+  const registrationAllowed = await isRegistrationAllowed(env);
+  if (!registrationAllowed) {
+    log('warn', 'Registration attempt blocked - registration disabled');
+    return new Response(JSON.stringify({ error: 'User registration is currently disabled' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json', ...getCorsHeaders(origin) }
+    });
+  }
   
   const usernameValidation = validateUsername(username);
   if (!usernameValidation.valid) {

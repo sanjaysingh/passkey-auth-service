@@ -24,6 +24,25 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
+    - name: Deploy configuration to KV
+      run: |
+        # Install wrangler globally for KV operations
+        npm install -g wrangler
+        
+        # Deploy configuration settings to KV store
+        echo "Deploying configuration settings to KV store..."
+        
+        # Read the User.Registration.Allowed setting from config.json
+        REGISTRATION_ALLOWED=$(node -p "JSON.parse(require('fs').readFileSync('config.json', 'utf8'))['User.Registration.Allowed']")
+        
+        # Update KV store with the configuration
+        echo "Setting User.Registration.Allowed to: $REGISTRATION_ALLOWED"
+        wrangler kv:key put --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"
+        
+        echo "Configuration deployment completed"
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
     - name: Deploy to Cloudflare Workers
       uses: cloudflare/wrangler-action@v3
       with:
