@@ -37,7 +37,7 @@ jobs:
         
         # Update KV store with the configuration
         echo "Setting User.Registration.Allowed to: $REGISTRATION_ALLOWED"
-        wrangler kv key put --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"
+        wrangler kv key put --remote --binding=AUTH_KV "config:User.Registration.Allowed" "$REGISTRATION_ALLOWED"
         
         echo "Configuration deployment completed"
       env:
